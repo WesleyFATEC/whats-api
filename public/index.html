@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Teste WhatsApp Web API</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        #chats, #messages { border: 1px solid #ccc; padding: 10px; margin-bottom: 20px; }
+        #chats li { cursor: pointer; }
+        .selected { background: #def; }
+        textarea { width: 100%; }
+    </style>
+</head>
+<body>
+    <h2>Conversas</h2>
+    <ul id="chats"></ul>
+    <h2>Mensagens</h2>
+    <ul id="messages"></ul>
+    <h2>Enviar mensagem</h2>
+    <form id="sendForm">
+        <input type="text" id="to" placeholder="ChatId (ex: 5511999999999@c.us)" required /><br>
+        <textarea id="msg" placeholder="Mensagem" required></textarea><br>
+        <button type="submit">Enviar</button>
+    </form>
+    <script>
+        const chatsUl = document.getElementById('chats');
+        const messagesUl = document.getElementById('messages');
+        let selectedChatId = null;
+
+        function fetchChats() {
+            fetch('/api/whatsapp/chats')
+                .then(res => res.json())
+                /*.then(chats => {
+                    chatsUl.innerHTML = '';
+                    chats.forEach(chat => {
+                        const li = document.createElement('li');
+                        li.textContent = (chat.name || chat.id) + (chat.isGroup ? ' (Grupo)' : '');
+                        li.onclick = () => selectChat(chat.id, li);
+                        chatsUl.appendChild(li);
+                    });
+                });*/
+        }
+
+        function selectChat(chatId, liElem) {
+            selectedChatId = chatId;
+            document.querySelectorAll('#chats li').forEach(li => li.classList.remove('selected'));
+            liElem.classList.add('selected');
+            fetchMessages(chatId);
+            document.getElementById('to').value = chatId;
+        }
+
+        function fetchMessages(chatId) {
+            fetch(`/api/whatsapp/messages?chatId=${encodeURIComponent(chatId)}`)
+                .then(res => res.json())
+                .then(msgs => {
+                    messagesUl.innerHTML = '';
+                    msgs.forEach(msg => {
+                        const li = document.createElement('li');
+                        li.textContent = `[${new Date(msg.timestamp * 1000).toLocaleString()}] ${msg.from}: ${msg.body}`;
+                        messagesUl.appendChild(li);
+                    });
+                });
+        }
+
+        document.getElementById('sendForm').onsubmit = function(e) {
+            e.preventDefault();
+            const to = document.getElementById('to').value;
+            const message = document.getElementById('msg').value;
+            fetch('/api/whatsapp/send-text', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ to, message })
+            })
+            .then(res => res.json())
+            .then(resp => {
+                alert(resp.success ? 'Mensagem enviada!' : 'Erro: ' + resp.error);
+                if (selectedChatId === to) fetchMessages(to);
+            });
+        };
+
+        fetchChats();
+    </script>
+</body>
+</html>

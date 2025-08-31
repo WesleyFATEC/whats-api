@@ -1,0 +1,249 @@
+// src/whatsapp/client.js
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const qrcode = require('qrcode-terminal');
+const path = require('path');
+
+let client;
+let isClientReady = false;
+let clientReadyPromiseResolve;
+const clientReadyPromise = new Promise((resolve) => {
+  clientReadyPromiseResolve = resolve;
+});
+
+async function initializeWhatsAppClient() {
+  client = new Client({
+    authStrategy: new LocalAuth({ clientId: 'whatsapp-api-bot' }),
+    puppeteer: {
+      executablePath: '/usr/bin/chromium-browser',
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--no-zygote',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--single-process',
+        '--disable-gpu',
+        '--lang=en-US',
+        '--disable-site-isolation-trials',
+        '--disable-gl-drawing-for-tests',
+        '--disable-features=site-per-process',
+      ],
+    },
+  });
+
+  client.on('qr', (qr) => {
+    console.log('----------------------------------------------------');
+    console.log('Escaneie o QR Code abaixo com seu celular (WhatsApp > Aparelhos Conectados):');
+    qrcode.generate(qr, { small: true });
+    console.log('----------------------------------------------------');
+  });
+
+  client.on('ready', () => {
+    console.log('🎉 WhatsApp está conectado e pronto para uso!');
+    isClientReady = true;
+    if (clientReadyPromiseResolve) {
+      clientReadyPromiseResolve();
+      clientReadyPromiseResolve = null;
+    }
+  });
+
+  client.on('authenticated', () => {
+    console.log('Autenticado com sucesso!');
+  });
+
+  client.on('auth_failure', (msg) => {
+    console.error('Falha na autenticação:', msg);
+  });
+
+  client.on('disconnected', (reason) => {
+    console.log('Cliente desconectado:', reason);
+    isClientReady = false;
+  });
+
+  await client.initialize();
+}
+
+async function sendTextMessage(to, message) {
+  if (!isClientReady) await clientReadyPromise;
+  if (!client) throw new Error('Cliente WhatsApp não inicializado.');
+  await client.sendMessage(to, message);
+  console.log(`Mensagem de texto enviada para ${to}`);
+}
+
+async function sendMediaMessage(to, base64Data, filename, caption = '', sendAsVoice = false, mimetype = null) {
+  if (!isClientReady) await clientReadyPromise;
+  if (!client) throw new Error('Cliente WhatsApp não inicializado.');
+  const mimeType = mimetype || getMimeType(filename);
+  const media = new MessageMedia(mimeType, base64Data, filename);
+  const options = { caption };
+  if (sendAsVoice && mimeType.startsWith('audio')) {
+    options.sendAudioAsVoice = true;
+  }
+  await client.sendMessage(to, media, options);
+  console.log(`Mídia (${filename}) enviada para ${to}`);
+}
+
+async function manageChatLabel(chatId, labelName, action) {
+  if (!isClientReady) await clientReadyPromise;
+  if (!client) throw new Error('Cliente WhatsApp não inicializado.');
+  const chat = await client.getChatById(chatId);
+  if (!chat) throw new Error(`Chat com ID ${chatId} não encontrado.`);
+  const labels = await client.getLabels();
+  const label = labels.find((l) => l.name === labelName);
+  if (!label) throw new Error(`Etiqueta "${labelName}" não encontrada.`);
+  let currentLabelIds = await chat.getLabels();
+  if (!Array.isArray(currentLabelIds)) currentLabelIds = [];
+  let newLabels;
+  if (action === 'add') {
+    newLabels = Array.from(new Set([...currentLabelIds, label.id]));
+  } else if (action === 'remove') {
+    newLabels = currentLabelIds.filter((id) => id !== label.id);
+  } else {
+    throw new Error('Ação de etiqueta inválida. Use "add" ou "remove".');
+  }
+  await chat.changeLabels(newLabels);
+  console.log(`Etiqueta "${labelName}" ${action === 'add' ? 'adicionada' : 'removida'} do chat ${chatId}`);
+}
+
+async function listChats(searchTerm = '') {
+  if (!isClientReady) await clientReadyPromise;
+  if (!client) throw new Error('Cliente WhatsApp não inicializado.');
+  const chats = await client.getChats();
+  const formattedChats = chats.map((chat) => ({
+    id: chat.id._serialized,
+    name: chat.name || chat.id.user || chat.formattedTitle || 'Desconhecido',
+    isGroup: chat.isGroup,
+    unreadCount: chat.unreadCount || 0,
+    lastMessage: chat.lastMessage
+      ? {
+          id: chat.lastMessage.id._serialized,
+          body: chat.lastMessage.body || '',
+          timestamp: Math.floor(chat.lastMessage.timestamp),
+          from: chat.lastMessage.fromMe ? 'Me' : chat.lastMessage.from,
+          to: chat.lastMessage.to,
+        }
+      : null,
+  }));
+  if (!searchTerm) return formattedChats;
+  searchTerm = searchTerm.toLowerCase();
+  return formattedChats.filter(
+    (chat) => chat.name?.toLowerCase().includes(searchTerm) || chat.id.toLowerCase().includes(searchTerm)
+  );
+}
+async function listMessages(chatId, limit = 20, beforeMessageId = null) {
+  if (!isClientReady) await clientReadyPromise;
+  if (!client) throw new Error('Cliente WhatsApp não inicializado.');
+
+  const chat = await client.getChatById(chatId);
+  let options = { limit };
+
+  if (beforeMessageId) {
+    try {
+      const beforeMessage = await client.getMessageById(beforeMessageId);
+      options.before = beforeMessage;
+    } catch (error) {
+      console.warn(`Mensagem com ID ${beforeMessageId} não encontrada, buscando últimas ${limit} mensagens: ${error.message}`);
+    }
+  }
+
+  const messages = await chat.fetchMessages(options);
+  return messages.map((msg) => ({
+    id: msg.id._serialized,
+    from: msg.fromMe ? 'Me' : msg.from,
+    fromMe: msg.fromMe,
+    body: msg.body || '',
+    timestamp: Math.floor(msg.timestamp),
+    type: msg.type,
+    hasMedia: msg.hasMedia,
+    media: msg.hasMedia
+      ? { mimetype: msg.mimetype || getMimeType(msg.media?.filename || `media_${msg.id._serialized}`), filename: msg.media?.filename || `media_${msg.id._serialized}` }
+      : null,
+  }));
+}
+
+
+async function getMediaByMessageId(messageId, chatId) {
+  if (!isClientReady) await clientReadyPromise;
+  if (!client) throw new Error('Cliente WhatsApp não inicializado.');
+  const chat = await client.getChatById(chatId);
+  const messages = await chat.fetchMessages({ limit: 100 });
+  const msg = messages.find((m) => m.id._serialized === messageId);
+  if (!msg || !msg.hasMedia) throw new Error('Mensagem não encontrada ou não contém mídia');
+  const mediaData = await msg.downloadMedia();
+  if (!mediaData) throw new Error('Falha ao baixar mídia');
+  return {
+    mimetype: mediaData.mimetype,
+    data: mediaData.data,
+    filename: mediaData.filename || `media_${messageId}`,
+  };
+}
+
+function setupMessageListener(callback) {
+  if (!client) return;
+  client.on('message', (message) => {
+    const formattedMessage = {
+      id: message.id._serialized,
+      from: message.fromMe ? 'Me' : message.from,
+      to: message.to,
+      body: message.body || '',
+      timestamp: Math.floor(message.timestamp),
+      type: message.type,
+      hasMedia: message.hasMedia,
+      media: message.hasMedia
+        ? { mimetype: message.mimetype || getMimeType(`media_${message.id._serialized}`), filename: `media_${message.id._serialized}` }
+        : null,
+    };
+    latestMessages.push(formattedMessage);
+    if (latestMessages.length > 100) latestMessages.shift();
+    callback(formattedMessage);
+  });
+}
+
+function getMimeType(filename) {
+  const ext = path.extname(filename).toLowerCase();
+  switch (ext) {
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.png':
+      return 'image/png';
+    case '.gif':
+      return 'image/gif';
+    case '.mp4':
+      return 'video/mp4';
+    case '.webm':
+      return 'video/webm';
+    case '.mp3':
+      return 'audio/mp3';
+    case '.ogg':
+      return 'audio/ogg';
+    case '.wav':
+      return 'audio/wav';
+    case '.pdf':
+      return 'application/pdf';
+    case '.doc':
+    case '.docx':
+      return 'application/msword';
+    case '.xls':
+    case '.xlsx':
+      return 'application/vnd.ms-excel';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+let latestMessages = [];
+
+module.exports = {
+  initializeWhatsAppClient,
+  sendTextMessage,
+  sendMediaMessage,
+  manageChatLabel,
+  getWhatsAppClient: () => client,
+  isWhatsAppClientReady: () => isClientReady,
+  listChats,
+  listMessages,
+  getMediaByMessageId,
+  setupMessageListener,
+};
