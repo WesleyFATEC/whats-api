@@ -3,4 +3,5 @@ node_modules/
 *.env
 .wwebjs_auth/
 .wwebjs_cache/
+src/api/tmp/wa-media
 
