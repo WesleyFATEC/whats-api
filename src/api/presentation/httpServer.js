@@ -1,3 +1,5 @@
+// src/api/presentation/httpServer.js
+
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -7,47 +9,37 @@ const streamifier = require('streamifier');
 const { Server } = require('socket.io');
 const http = require('http');
 const config = require('../config/config');
-const WhatsAppClient = require('../infrastructure/whatsapp/WhatsAppClient');
-const FileSystemAdapter = require('../infrastructure/fileSystem/FileSystemAdapter');
-const SendTextMessageUseCase = require('../application/useCases/SendTextMessageUseCase');
-const ListChatsUseCase = require('../application/useCases/ListChatsUseCase');
-const ListMessagesUseCase = require('../application/useCases/ListMessagesUseCase');
-const GetMediaUseCase = require('../application/useCases/GetMediaUseCase');
-const SendMediaMessageUseCase = require('../application/useCases/SendMediaMessageUseCase');
-const GetFileUseCase = require('../application/useCases/GetFileUseCase');
 
 class HttpServer {
   #app;
   #server;
   #io;
+  #useCases;
   #whatsAppClient;
   #fileSystemAdapter;
-  #sendTextMessageUseCase;
-  #listChatsUseCase;
-  #listMessagesUseCase;
-  #getMediaUseCase;
-  #sendMediaMessageUseCase;
-  #getFileUseCase;
 
-  constructor() {
+  constructor(useCases, whatsAppClient, fileSystemAdapter) {
     this.#app = express();
     this.#server = http.createServer(this.#app);
     this.#io = new Server(this.#server, {
       cors: { origin: config.corsOrigin, methods: ['GET', 'POST'] },
     });
-    this.#whatsAppClient = new WhatsAppClient();
-    this.#fileSystemAdapter = new FileSystemAdapter();
-    this.#sendTextMessageUseCase = new SendTextMessageUseCase(this.#whatsAppClient);
-    this.#listChatsUseCase = new ListChatsUseCase(this.#whatsAppClient);
-    this.#listMessagesUseCase = new ListMessagesUseCase(this.#whatsAppClient);
-    this.#getMediaUseCase = new GetMediaUseCase(this.#whatsAppClient);
-    this.#sendMediaMessageUseCase = new SendMediaMessageUseCase(this.#whatsAppClient);
-    this.#getFileUseCase = new GetFileUseCase(this.#whatsAppClient, this.#fileSystemAdapter);
+
+    // Armazena as dependências injetadas
+    this.#useCases = useCases;
+    this.#whatsAppClient = whatsAppClient;
+    this.#fileSystemAdapter = fileSystemAdapter;
+  }
+  
+  // expor o 'io' para o index.js
+  getIO() {
+    return this.#io;
   }
 
   async setup() {
     // Middleware
-    this.#app.use(cors({
+   this.#app.use(
+      cors({
       origin: config.corsOrigin,
       methods: ['GET', 'POST', 'OPTIONS'],
       allowedHeaders: ['Content-Type'],
@@ -55,21 +47,13 @@ class HttpServer {
     this.#app.use(bodyParser.json({ limit: '50mb' }));
     this.#app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
     this.#app.use(express.static('public'));
-
-    // Criar diretório de cache
-    await this.#fileSystemAdapter.ensureCacheDirectory();
-
-    // Configurar listener de mensagens
-    this.#whatsAppClient.setupMessageListener((msg) => {
-      this.#io.to(msg.from).emit('newMessage', msg.toJSON());
-      this.#io.to(msg.to).emit('newMessage', msg.toJSON());
-    });
-
     // Endpoints
     this.#setupRoutes();
   }
 
   #setupRoutes() {
+    const upload = multer({ storage: multer.memoryStorage() });
+
     this.#app.get('/api/whatsapp/status', async (req, res) => {
       try {
         const isReady = await this.#whatsAppClient.isReady();
@@ -85,7 +69,7 @@ class HttpServer {
 
     this.#app.post('/api/whatsapp/send-text', async (req, res) => {
       try {
-        await this.#sendTextMessageUseCase.execute(req.body.to, req.body.message);
+        await this.#useCases.sendTextMessageUseCase.execute(req.body.to, req.body.message);
         res.status(200).json({ success: true, message: 'Mensagem de texto enviada com sucesso.' });
       } catch (error) {
         console.error(`Erro ao enviar mensagem de texto: ${error.message}`, error.stack);
@@ -93,19 +77,32 @@ class HttpServer {
       }
     });
 
-    this.#app.get('/api/whatsapp/chats', async (req, res) => {
-      try {
-        const chats = await this.#listChatsUseCase.execute(req.query.search);
-        res.json(chats);
-      } catch (error) {
-        console.error(`Erro ao buscar chats: ${error.message}`, error.stack);
-        res.status(500).json({ error: 'Erro ao buscar chats', details: error.message });
-      }
-    });
+  this.#app.get('/api/whatsapp/chats', async (req, res) => {
+    const searchTerm = req.query.searchTerm; 
+    const chats = await this.#useCases.listChatsUseCase.execute(searchTerm); 
+    res.json(chats);
+  });
+
+  this.#app.get('/api/whatsapp/chat/:chatId/photo', async (req, res) => {
+    try {
+      const { chatId } = req.params;
+      const { filePath, contentType } = await this.#useCases.getPhotoProfileUseCase.execute(chatId);
+      
+      res.set('Content-Type', contentType);
+      // O frontend pode cachear isso por 1 dia no navegador
+      res.set('Cache-Control', 'public, max-age=86400'); 
+      res.sendFile(filePath);
+
+    } catch (error) {
+      // (Seu middleware de erro centralizado vai pegar isso)
+      console.error(`Erro ao servir foto para ${req.params.chatId}:`, error.message);
+      res.status(500).json({ error: error.message });
+    }
+  });
 
     this.#app.get('/api/whatsapp/messages', async (req, res) => {
       try {
-        const messages = await this.#listMessagesUseCase.execute(req.query.chatId, req.query.limit ? parseInt(req.query.limit) : 20);
+        const messages = await this.#useCases.listMessagesUseCase.execute(req.query.chatId, req.query.limit ? parseInt(req.query.limit) : 20);
         res.json(messages.map((msg) => msg.toJSON()));
       } catch (error) {
         console.error(`Erro ao buscar mensagens: ${error.message}`, error.stack);
@@ -115,7 +112,7 @@ class HttpServer {
 
     this.#app.get('/api/whatsapp/media/:messageId', async (req, res) => {
       try {
-        const media = await this.#getMediaUseCase.execute(req.params.messageId, req.query.chatId);
+        const media = await this.#useCases.getMediaUseCase.execute(req.params.messageId, req.query.chatId);
         res.json(media);
       } catch (error) {
         console.error(`Erro ao baixar mídia: ${error.message}`, error.stack);
@@ -123,7 +120,6 @@ class HttpServer {
       }
     });
 
-    const upload = multer({ storage: multer.memoryStorage() });
     this.#app.post('/api/whatsapp/send-media', upload.single('file'), async (req, res) => {
       try {
         const { to, caption } = req.body;
@@ -142,7 +138,7 @@ class HttpServer {
           filename = file.originalname;
           mimetype = file.mimetype;
         }
-        await this.#sendMediaMessageUseCase.execute(to, base64Data, filename, caption, mimetype);
+        await this.#useCases.sendMediaMessageUseCase.execute(to, base64Data, filename, caption, mimetype);
         res.json({ success: true, message: 'Mídia enviada com sucesso.' });
       } catch (error) {
         console.error(`Erro ao enviar mídia: ${error.message}`, error.stack);
@@ -153,19 +149,21 @@ class HttpServer {
     this.#app.get('/api/whatsapp/file/:messageId', async (req, res) => {
       res.set('Access-Control-Allow-Origin', config.corsOrigin);
       try {
-        const { filePath, contentType, filename } = await this.#getFileUseCase.execute(req.params.messageId);
+        const { filePath, contentType, filename } = await this.#useCases.getFileUseCase.execute(req.params.messageId);
         console.log(`Servindo arquivo para messageId ${req.params.messageId}: ${filePath}`);
         res.set('Content-Type', contentType);
         res.set('Content-Disposition', `attachment; filename="${filename}"`);
         res.sendFile(filePath);
       } catch (error) {
-        console.error(`Erro ao buscar/servir mídia para messageId ${req.params.messageId}: ${error.message}`, error.stack);
+        console.error(`Erro ao baixar arquivo: ${error.message}`, error.stack);
         res.status(400).json({ error: error.message });
       }
     });
+
+
   }
 
-  async #convertWebmToOggOpus(webmBuffer) {
+ async #convertWebmToOggOpus(webmBuffer) {
     return new Promise((resolve, reject) => {
       let chunks = [];
       const command = ffmpeg(streamifier.createReadStream(webmBuffer))

@@ -1,3 +1,5 @@
+const ValidationError = require("../errors/ValidationError");
+
 class GetMediaUseCase {
   #whatsAppRepository;
 
@@ -7,7 +9,7 @@ class GetMediaUseCase {
 
   async execute(messageId, chatId) {
     if (!messageId || !chatId) {
-      throw new Error('messageId e chatId são obrigatórios.');
+      throw new ValidationErrorError('messageId e chatId são obrigatórios.');
     }
     return await this.#whatsAppRepository.getMediaByMessageId(messageId, chatId);
   }

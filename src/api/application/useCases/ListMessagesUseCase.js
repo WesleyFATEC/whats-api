@@ -1,3 +1,5 @@
+const ValidationError = require("../errors/ValidationError");
+
 class ListMessagesUseCase {
   #whatsAppRepository;
 
@@ -7,7 +9,7 @@ class ListMessagesUseCase {
 
   async execute(chatId, limit) {
     if (!chatId) {
-      throw new Error('chatId é obrigatório.');
+      throw new ValidationError('chatId é obrigatório.');
     }
     return await this.#whatsAppRepository.listMessages(chatId, limit);
   }

@@ -14,7 +14,8 @@
 <body>
     <h2>Conversas</h2>
     <ul id="chats"></ul>
-    <h2>Mensagens</h2>
+    
+    <h2>Mensadgens</h2>
     <ul id="messages"></ul>
     <h2>Enviar mensagem</h2>
     <form id="sendForm">
@@ -30,7 +31,7 @@
         function fetchChats() {
             fetch('/api/whatsapp/chats')
                 .then(res => res.json())
-                /*.then(chats => {
+                .then(chats => {
                     chatsUl.innerHTML = '';
                     chats.forEach(chat => {
                         const li = document.createElement('li');
@@ -38,7 +39,7 @@
                         li.onclick = () => selectChat(chat.id, li);
                         chatsUl.appendChild(li);
                     });
-                });*/
+                });
         }
 
         function selectChat(chatId, liElem) {

@@ -30,6 +30,10 @@ class WhatsAppRepository {
   async getPhotoProfile(chatId) {
     throw new Error('Method not implemented');
   }
+
+  async listChats() {
+    throw new Error('Method not implemented');
+  }
 }
 
 module.exports = WhatsAppRepository;

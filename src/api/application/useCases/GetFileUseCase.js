@@ -1,3 +1,5 @@
+const NotFoundError = require('../errors/NotFoundError');
+const ValidationError = require('../errors/ValidationError');
 class GetFileUseCase {
   #whatsAppRepository;
   #fileSystemAdapter;
@@ -9,7 +11,7 @@ class GetFileUseCase {
 
   async execute(messageId) {
     if (!messageId) {
-      throw new Error('messageId é obrigatório.');
+      throw new ValidationError('messageId é obrigatório.');
     }
 
     // Verificar cache
@@ -25,20 +27,25 @@ class GetFileUseCase {
     // Obter mensagem e mídia
     const msg = await this.#whatsAppRepository.getMessageById(messageId);
     if (!msg || !msg.hasMedia) {
-      throw new Error('Mídia não encontrada');
+      throw new NotFoundErrorError('Mídia não encontrada');
     }
     const media = await msg.downloadMedia();
     if (!media || !media.data) {
       throw new Error('Erro ao baixar mídia');
     }
 
-    // Salvar no cache
-    const savedFile = await this.#fileSystemAdapter.saveFile(messageId, Buffer.from(media.data, 'base64'), media.mimetype);
-    return {
-      filePath: savedFile.filePath,
-      contentType: this.#fileSystemAdapter.getContentType(savedFile.ext),
-      filename:savedFile.filename
-    };
+//salvar no cache
+  const savedFile = await this.#fileSystemAdapter.saveFile(
+  messageId, 
+  Buffer.from(media.data, 'base64'), 
+  media.mimetype,
+  media.filename
+);
+return {
+  filePath: savedFile.filePath,
+  contentType: savedFile.contentType,
+  filename: savedFile.filename
+};
   }
 }
 

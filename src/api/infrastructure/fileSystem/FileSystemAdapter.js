@@ -4,97 +4,147 @@ const config = require('../../config/config');
 
 class FileSystemAdapter {
   #mediaCachePath;
+  #profilePicCachePath;
 
   constructor() {
+    // Carrega os dois caminhos de cache
+    if (!config.mediaCachePath || !config.profilePicCachePath) {
+      throw new Error('Config mediaCachePath e profilePicCachePath devem estar definidos.');
+    }
     this.#mediaCachePath = config.mediaCachePath;
+    this.#profilePicCachePath = config.profilePicCachePath;
   }
 
+  /**
+   * Garante que ambos os diretórios de cache existam.
+   */
   async ensureCacheDirectory() {
     try {
       await fs.mkdir(this.#mediaCachePath, { recursive: true });
-      console.log(`Diretório de cache criado/acessado: ${this.#mediaCachePath}`);
+      await fs.mkdir(this.#profilePicCachePath, { recursive: true });
+      console.log(`Diretório de cache de mídia: ${this.#mediaCachePath}`);
+      console.log(`Diretório de cache de fotos de perfil: ${this.#profilePicCachePath}`);
     } catch (error) {
-      console.error(`Erro ao criar diretório de cache ${this.#mediaCachePath}: ${error.message}`, error.stack);
+      console.error(`Erro ao criar diretórios de cache: ${error.message}`, error.stack);
       throw error;
     }
   }
 
+  // --- Métodos de Mídia de Mensagem (para GetFileUseCase) ---
+
+  /**
+   * Encontra um arquivo de mídia de mensagem (vídeo, áudio, doc) no cache.
+   * Procura por um arquivo .meta e .data.
+   */
   async findFile(messageId) {
-    const basePath = path.normalize(path.resolve(this.#mediaCachePath, messageId));
-    const exts = [
-      '.jpg', '.jpeg', '.png', '.webp', '.mp4', '.webm', '.mov',
-      '.mp3', '.ogg', '.wav', '.opus', '.pdf', '.doc', '.docx', '.xls', '.xlsx', ''
-    ];
-    for (const ext of exts) {
-      const file = `${basePath}${ext}`;
-      try {
-        await fs.access(file);
-        return { filePath: file, ext };
-      } catch {
-        continue;
-      }
+    const metaPath = path.normalize(path.resolve(this.#mediaCachePath, `${messageId}.meta`));
+    const dataPath = path.normalize(path.resolve(this.#mediaCachePath, `${messageId}.data`));
+
+    try {
+      const metaContent = await fs.readFile(metaPath, 'utf-8');
+      const meta = JSON.parse(metaContent);
+      
+      await fs.access(dataPath); // Garante que o arquivo de dados também existe
+      
+      return {
+        filePath: dataPath,
+        contentType: meta.mimetype,
+        filename: meta.filename
+      };
+    } catch {
+      // Se .meta ou .data não existem, o cache falhou
+      return null;
     }
-    return null;
   }
 
-  async saveFile(messageId, data, mimetype) {
+  /**
+   * Salva um arquivo de mídia de mensagem no cache.
+   * Salva um arquivo .data (buffer) e .meta (json).
+   */
+  async saveFile(messageId, dataBuffer, mimetype, originalFilename) {
+    const metaPath = path.normalize(path.resolve(this.#mediaCachePath, `${messageId}.meta`));
+    const dataPath = path.normalize(path.resolve(this.#mediaCachePath, `${messageId}.data`));
     
-        function getExtension(mimetype) {
-  const map = {
-    'image/jpeg': '.jpg',
-    'image/png': '.png',
-    'image/webp': '.webp',
-    'video/mp4': '.mp4',
-    'video/webm': '.webm',
-    'video/quicktime': '.mov',
-    'audio/mp3': '.mp3',
-    'audio/ogg': '.ogg',
-    'audio/wav': '.wav',
-    'audio/opus': '.opus',
-    'application/pdf': '.pdf',
-    'application/msword': '.doc',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
-    'application/vnd.ms-excel': '.xls',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx'
-  };
-  if (map[mimetype]) return map[mimetype];
-  if (mimetype && mimetype.startsWith('audio/ogg')) return '.ogg';
-  return '';
-}
-    const ext = getExtension(mimetype);
-    const filePath = path.normalize(path.resolve(this.#mediaCachePath, `${messageId}${ext}`));
+    const meta = {
+      filename: originalFilename || `media_${messageId}`,
+      mimetype: mimetype || 'application/octet-stream'
+    };
+    
     try {
-      await fs.writeFile(filePath, data);
+      await Promise.all([
+        fs.writeFile(dataPath, dataBuffer),
+        fs.writeFile(metaPath, JSON.stringify(meta))
+      ]);
       
-      console.log(`Arquivo salvo em: ${filePath }`);
-      await fs.stat(filePath); // Validar após escrita
-      return { filePath, ext };
+      return {
+        filePath: dataPath,
+        contentType: meta.mimetype,
+        filename: meta.filename
+      };
     } catch (error) {
-      console.error(`Erro ao salvar arquivo ${filePath}: ${error.message}`, error.stack);
+      console.error(`Erro ao salvar arquivo ${dataPath}: ${error.message}`, error.stack);
       throw error;
     }
   }
 
-  getContentType(ext) {
-    return {
-      '.jpg': 'image/jpeg',
-      '.jpeg': 'image/jpeg',
-      '.png': 'image/png',
-      '.webp': 'image/webp',
-      '.mp4': 'video/mp4',
-      '.webm': 'video/webm',
-      '.mov': 'video/quicktime',
-      '.mp3': 'audio/mp3',
-      '.ogg': 'audio/ogg',
-      '.wav': 'audio/wav',
-      '.opus': 'audio/ogg',
-      '.pdf': 'application/pdf',
-      '.doc': 'application/msword',
-      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      '.xls': 'application/vnd.ms-excel',
-      '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      '': 'application/octet-stream'
-    }[ext] || 'application/octet-stream';
+  // --- NOVOS Métodos de Foto de Perfil (para GetPhotoProfileUseCase) ---
+
+  /**
+   * Encontra uma foto de perfil no cache.
+   */
+  async findProfilePic(chatId) {
+    const sanitizedId = this.#sanitizeId(chatId);
+    const metaPath = path.normalize(path.resolve(this.#profilePicCachePath, `${sanitizedId}.meta`));
+    const dataPath = path.normalize(path.resolve(this.#profilePicCachePath, `${sanitizedId}.data`));
+    
+    try {
+      const metaContent = await fs.readFile(metaPath, 'utf-8');
+      const meta = JSON.parse(metaContent);
+      
+      await fs.access(dataPath); // Garante que o arquivo de dados também existe
+      
+      return {
+        filePath: dataPath,
+        contentType: meta.contentType
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Salva uma foto de perfil no cache.
+   */
+  async saveProfilePic(chatId, dataBuffer, contentType) {
+    const sanitizedId = this.#sanitizeId(chatId);
+    const metaPath = path.normalize(path.resolve(this.#profilePicCachePath, `${sanitizedId}.meta`));
+    const dataPath = path.normalize(path.resolve(this.#profilePicCachePath, `${sanitizedId}.data`));
+    
+    const meta = {
+      contentType: contentType || 'image/jpeg' // Fotos de perfil são geralmente jpeg
+    };
+    
+    try {
+      await Promise.all([
+        fs.writeFile(dataPath, dataBuffer),
+        fs.writeFile(metaPath, JSON.stringify(meta))
+      ]);
+      
+      return {
+        filePath: dataPath,
+        contentType: meta.contentType
+      };
+    } catch (error) {
+      console.error(`Erro ao salvar foto de perfil ${dataPath}: ${error.message}`, error.stack);
+      throw error;
+    }
+  }
+
+  /**
+   * Converte IDs de chat (ex: '55119999@c.us') em nomes de arquivo seguros.
+   */
+  #sanitizeId(id) {
+    return id.replace(/[@.-]/g, '_');
   }
 }
 
